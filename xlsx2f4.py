@@ -5,43 +5,36 @@ import yaml
 import argparse
 from sys import stdin
 from sys import stdout
+import sys
 import httplib2
 import os
 import urlparse
-from omekaclient import OmekaClient
-from omekautils import get_omeka_config
-from omekautils import create_stream_logger
+import requests
 
 
 
-""" Uploads an entire spreadsheet to an Omeka server """
 
-logger = create_stream_logger('xlxx2omeka', stdout)
+
+
+""" Uploads an entire spreadsheet to a Fedora server """
+
+
 
 # Define and parse command-line arguments
 parser = argparse.ArgumentParser()
 parser.add_argument('inputfile', type=argparse.FileType('rb'),  default=stdin, help='Name of input Excel file')
-parser.add_argument('-k', '--key', default=None, help='Omeka API Key')
+
 parser.add_argument('-u', '--api_url',default=None, help='Omeka API Endpoint URL (hint, ends in /api)')
-parser.add_argument('-i', '--identifier', default="Identifier", help='Name of an Identifier column in the input spreadsheet. ')
 parser.add_argument('-d', '--download_cache', default="./data", help='Path to a directory in which to chache dowloads (defaults to ./data)')
-parser.add_argument('-t', '--title', default="Title", help='Name of a Title column in the input spreadsheet. ')
-parser.add_argument('-p', '--public', action='store_true', help='Make items public')
-parser.add_argument('-f', '--featured', action='store_true', help='Make items featured')
 parser.add_argument('-c', '--create_collections', action='store_true', help='Auto-create missing collections')
-parser.add_argument('-e', '--create_elements', action='store_true', help='Auto-create missing element types')
-parser.add_argument('-y', '--create_item_types', action='store_true', help='Auto-create missing Item Types')
 parser.add_argument('-q', '--quietly', action='store_true', help='Only log errors and warnings not the constant stream of info')
 args = vars(parser.parse_args())
 
 
-config = get_omeka_config()
-endpoint = args['api_url'] if args['api_url'] <> None else config['api_url']
-apikey   = args['key'] if args['api_url'] <> None else config['key']
-omeka_client = OmekaClient(endpoint.encode("utf-8"), logger, apikey)
+endpoint = args['api_url'] 
+
 inputfile = args['inputfile']
-identifier_column = args['identifier']
-title_column = args['title']
+
 data_dir = args['download_cache']
 if args["quietly"]:
     logger.setLevel(30)
@@ -59,7 +52,7 @@ def download_and_upload_files(new_item_id, original_id, URLs, files):
         file_path = mapping.downloaded_file(url)
         download_this = True
 
-        logger.info("Found something to download and re-upload %s", url)
+        print "Found something to download and re-upload %s" % url
 
         if file_path == None or file_path == "None": #Previous bug put "None" in spreadsheet
             filename = urlparse.urlsplit(url).path.split("/")[-1]
@@ -137,247 +130,129 @@ def upload(previous_id, original_id, jsonstr, title, URLs, files, iterations):
 
        
 
-class XlsxMapping:
-    """Keep track of all the mapping stuff from spreadsheet to Omeka"""
-    #Still needs work on methods rather than direct access to data structures
-    
-    def __init__(self, o_client, data = []):
-        self.collection_field_mapping = {}
-        self.id_to_omeka_id = {}
-        self.linked_fields = {}
-        self.related_fields = {}
-        self.id_to_title = {}
-        self.download_fields  = {}
-        self.url_to_file = {}
-        self.downloads = []
-        self.supplied_element_names = []
-        self.file_fields = {} 
-        self.multiple_uploads = {} #Collection: Iterations
-        self.multiples = [{'Collection': '', 'Iterations': 0}]
-        for sheet in data:
-            if sheet['title'] == 'Omeka Mapping':
-                self.supplied_element_names = sheet['data']
-                for row in sheet['data']:
-                    collection = row["Collection"]
-                    element_set = row["Omeka Element Set"]
-                    column = row["Column"]
-                    omeka_element = row["Omeka Element"]
-                    if not "Linked" in row:
-                        row["Linked"] = None
-                    if  not "Related" in row:
-                        row["Related"] = None
-                    if not "File" in row:
-                        row["File"] = None
-                       
-            
-                    if row['Download'] <> None and collection <> None:
-                        if not collection in self.download_fields:
-                            self.download_fields[collection] = {}
-                        self.download_fields[collection][column] = True
- 
-
-                    if row['File'] <> None and collection <> None:
-                        if not collection in self.file_fields:
-                            self.file_fields[collection] = {}
-                        self.file_fields[collection][column] = True
-                        
-                    if row["Linked"] <> None and collection <> None:
-                        if not collection in self.linked_fields:
-                            self.linked_fields[collection] = {}
-                        self.linked_fields[collection][column] = True
-                        
-                    if row["Related"] <> None and collection <> None:
-                        if not collection in self.related_fields:
-                            self.related_fields[collection] = {}
-                        relation = row["Related"]
-                        relation_id = None
-                        if ":" in str(relation):
-                            prefix, label = relation.split(":")
-                            relation_id = omeka_client.getRelationPropertyId(prefix,label)
-                            self.related_fields[collection][column] = relation_id
-                        
-                    if omeka_element <> None and column <> None and collection <> None:
-                        if not collection in self.collection_field_mapping:
-                            self.collection_field_mapping[collection] = {}
-                       
-                        set_id = o_client.getSetId(element_set)
-                        element_id = o_client.getElementId(set_id,omeka_element)
-    
-                        self.collection_field_mapping[collection][column] = element_id
-                    #Stop 'None' values appearing in the spreadsheet
-                    # And inexplicable 'null' columns  
-                    for key, value in row.items():
-                        if key == None:
-                            del row[key]
-                        elif value == None:
-                            row[key] = ""
-                        
-            elif sheet['title'] == 'ID Mapping':
-                for row in sheet['data']:
-                    self.id_to_omeka_id[row[identifier_column]] = row["Omeka ID"]
-                    title = row["Title"]
-                    if title <> None:
-                        self.id_to_title[row[identifier_column]] = title
-
-            #TODO - new sheet, download cache
-            elif sheet['title'] == 'Downloads':
-                for row in sheet['data']:
-                    self.url_to_file[row['url']] = row['file']
-
-            elif sheet['title'] == 'Multiple Uploads':
-                self.multiples = sheet['data']
-                for row in sheet['data']:
-                    self.multiple_uploads[row['Collection']] = row['Iterations']
-    
-    def has_map(self, collection, key):
-        return collection in mapping.collection_field_mapping and key in mapping.collection_field_mapping[collection]
-    
-    def is_linked_field(self, collection_name, key, value):
-        return collection_name in self.linked_fields and key in self.linked_fields[collection_name] and self.linked_fields[collection_name][key]  and value in self.id_to_omeka_id
-
-    def item_relation(self, collection_name, key, value):
-        if collection_name in self.related_fields and key in self.related_fields[collection_name] and self.related_fields[collection_name][key] and value in self.id_to_omeka_id:
-            return (self.related_fields[collection_name][key], self.id_to_omeka_id[value])
-        else:
-            return (None, None)
-    
-    def to_download(self, collection_name, key):
-        return collection_name in self.download_fields and key in self.download_fields[collection_name] and self.download_fields[collection_name][key]
-
-    def is_file(self, collection_name, key):
-        return collection_name in self.file_fields and key in self.file_fields[collection_name] and self.file_fields[collection_name][key]
-
-    def downloaded_file(self, url):
-        return self.url_to_file[url] if url in self.url_to_file else None
-    
-    def add_downloaded_file(self, url, filename):
-        self.url_to_file['url'] = filename
-        self.downloads.append({'url': url, 'file': filename})
-
-    def upload_collection_multiple_times(self, collection_name):
-        return self.multiple_uploads[collection_name] if collection_name in  self.multiple_uploads else 1
 
 #Get the main data
 databook = tablib.import_book(inputfile)
 data = yaml.load(databook.yaml)
-#Get mapping data
-mapfile = inputfile.name + ".mapping.xlsx"
-if os.path.exists(mapfile):
-    previous_output = tablib.import_book(open(mapfile,"rb"))
-    previous = yaml.load(previous_output.yaml)
-else:
-    previous = []    
-
-mapping = XlsxMapping(omeka_client, previous)
 
 
-id_mapping = []
+ns_prefixes = ["dc", "foaf"]
+blank_record = """
+@prefix dc: <http://purl.org/dc/terms/> .
+@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+<> """
+
 for d in data:
-    collection_name =  d['title']
-    logger.info("Processing potential collection: %s", collection_name)
-    iterations = mapping.upload_collection_multiple_times(collection_name)
-    collection_id = omeka_client.getCollectionId(collection_name, create=args['create_collections'], public=args["public"])
-    if collection_id <> None:
-        #Work out which fields can be automagically mapped
-        if not collection_name in mapping.collection_field_mapping:
-            logger.info("No mapping data for this collection. Attempting to make one")
-            mapping.collection_field_mapping[collection_name] = {}
-            
-      
-        
-        def map_element(key, element_id, set_name):
-            mapping.collection_field_mapping[collection_name][key] = element_id
-            mapping.supplied_element_names.append({"Collection": collection_name,
-                            "Column": key,
-                            "Omeka Element Set": set_name,
-                            "Omeka Element": key,
-                            "Linked": "",
-                            "Related": "",
-                            "Download": "",
-                            "File": ""})
-            
-        for key in d['data'][0]:
-
-            for set_name in default_element_set_names:
-                set_id = omeka_client.getSetId(set_name)
-                element_id = omeka_client.getElementId(set_id, key)
-                if element_id <> None and not key in mapping.collection_field_mapping[collection_name]:
-                    map_element(key, element_id, set_name)
-                    
-            if args['create_elements'] and key <> "Omeka Type" and not key in mapping.collection_field_mapping[collection_name]:
-                set_name = 'Bespoke Metadata'
-                set_id = omeka_client.getSetId(set_name, create=True)
-                element_id = omeka_client.getElementId(set_id, key, create=args['create_elements'])
-                map_element(key, element_id, set_name)
+    collection_name =  "XX%s" % d['title']
+    print "Processing potential collection: %s" % collection_name
+    data = """@prefix dc: <http://purl.org/dc/terms/> .\n@prefix foaf: <http://xmlns.com/foaf/0.1/> .\n \n<> dc:title '%s';""" % collection_name
+    headers = {'Content-type': 'text/turtle', 'Slug': collection_name, 'Accept': 'text/turtle'}
+    collection_url = "%s/%s" % (endpoint, collection_name)
+    # Delete first - heavy handed I know
+    res = requests.delete(url = collection_url)
+    res = requests.delete(url = collection_url + "/fcr:tombstone")
+    res = requests.put(url = collection_url,
+                        headers = headers,
+                        data = data)
+    print collection_url, res.text
     
-        for item in d['data']:
-            stuff_to_upload = False
-            relations = []
-            element_texts = []
-            URLs = []
-            files = []
+    #collection_id = omeka_client.getCollectionId(collection_name, create=args['create_collections'], public=args["public"])
+    
+  
+        
+      
+            
+    for key in d['data'][0]:
+        print "Column header: %s" % key
+
+    for item in d['data']:
+            stuff_to_upload = []
+        ##     relations = []
+        ##     element_texts = []
+        ##     URLs = []
+        ##     files = []
+            id = None
             for key,value in item.items():
-                (property_id, object_id) = mapping.item_relation(collection_name, key, value)
-                if value <> None:
-                    if key == "Omeka Type":
-                        item_type_id = omeka_client.getItemTypeId(value, create=args['create_item_types'])
-                        if item_type_id <> None:
-                            stuff_to_upload = True
-                    else:
-                        if mapping.has_map(collection_name, key):
-                            if  mapping.collection_field_mapping[collection_name][key] <> None:
-                                element_text = {"html": False, "text": "none"} #, "element_set": {"id": 0}}
-                                element_text["element"] = {"id": mapping.collection_field_mapping[collection_name][key] }
-                            else:
-                                element_text = {}
+                parts = key.split(":")
+                if len(parts) == 2:
+                    prefix = parts[0]
+                    if prefix in ns_prefixes:
+                        stuff_to_upload.append( '  %s   "%s"\n' % (key, value))
+                elif key == "ID":
+                    id = "YY__%s" % value
+                
+            if stuff_to_upload != [] and id != None:
+                data = "%s %s ." % ( blank_record , ";\n".join(stuff_to_upload))
+                item_url = "%s/%s" % (collection_url, id)
+                headers = {'Content-type': 'text/turtle', 'Slug': id, 'Accept': 'text/turtle'}
+                res = requests.delete(url = item_url)
+                res = requests.delete(url = item_url + "/fcr:tombstone")
+                res = requests.put(url = item_url,
+                headers = headers,
+                data = data)
+                    
+                print item_url, res.text
+        ##         (property_id, object_id) = mapping.item_relation(collection_name, key, value)
+        ##         if value <> None:
+        ##             if key == "Omeka Type":
+        ##                 item_type_id = omeka_client.getItemTypeId(value, create=args['create_item_types'])
+        ##                 if item_type_id <> None:
+        ##                     stuff_to_upload = True
+        ##             else:
+        ##                 if mapping.has_map(collection_name, key):
+        ##                     if  mapping.collection_field_mapping[collection_name][key] <> None:
+        ##                         element_text = {"html": False, "text": "none"} #, "element_set": {"id": 0}}
+        ##                         element_text["element"] = {"id": mapping.collection_field_mapping[collection_name][key] }
+        ##                     else:
+        ##                         element_text = {}
                             
-                            if mapping.is_linked_field(collection_name, key, value):
-                                #TODO - deal with muliple values
-                                to_title =  mapping.id_to_title[value]
-                                if to_title == None:
-                                    to_title =  mapping.id_to_omeka_id[value]
-                                element_text["text"] = "<a href='/items/show/%s'>%s</a>" % (mapping.id_to_omeka_id[value], to_title)
-                                element_text["html"] = True
-                                logger.info("Uploading HTML %s, %s, %s", key, value, element_text["text"])
-                            elif property_id <> None:
-                                logger.info("Relating this item to another")
-                                relations.append((property_id, object_id))
-                            else:
-                                try: # Have had some encoding problems - not sure if this is still needed
-                                    element_text["text"] = unicode(value)
+        ##                     if mapping.is_linked_field(collection_name, key, value):
+        ##                         #TODO - deal with muliple values
+        ##                         to_title =  mapping.id_to_title[value]
+        ##                         if to_title == None:
+        ##                             to_title =  mapping.id_to_omeka_id[value]
+        ##                         element_text["text"] = "<a href='/items/show/%s'>%s</a>" % (mapping.id_to_omeka_id[value], to_title)
+        ##                         element_text["html"] = True
+        ##                         logger.info("Uploading HTML %s, %s, %s", key, value, element_text["text"])
+        ##                     elif property_id <> None:
+        ##                         logger.info("Relating this item to another")
+        ##                         relations.append((property_id, object_id))
+        ##                     else:
+        ##                         try: # Have had some encoding problems - not sure if this is still needed
+        ##                             element_text["text"] = unicode(value)
 
-                                except:
-                                    logger.error("failed to add this string \n********\n %s \n*********\n" % value)
+        ##                         except:
+        ##                             logger.error("failed to add this string \n********\n %s \n*********\n" % value)
 
-                            element_texts.append(element_text)
+        ##                     element_texts.append(element_text)
                
-                else:
-                    item[key] = ""
+        ##         else:
+        ##             item[key] = ""
 
-                if mapping.to_download(collection_name, key):
-                    URLs.append(value)
-                if mapping.is_file(collection_name, key) and value:
-                    filename = os.path.join(data_dir,value)
-                    if os.path.exists(filename):
-                        files.append(filename)    
-                    else:
-                        logger.warning("skipping non existent file %s" % filename)
-            if not(identifier_column) in item:
-                stuff_to_upload = False
-                logger.info("No identifier (%s) in table", identifier_column)
+        ##         if mapping.to_download(collection_name, key):
+        ##             URLs.append(value)
+        ##         if mapping.is_file(collection_name, key) and value:
+        ##             filename = os.path.join(data_dir,value)
+        ##             if os.path.exists(filename):
+        ##                 files.append(filename)    
+        ##             else:
+        ##                 logger.warning("skipping non existent file %s" % filename)
+        ##     if not(identifier_column) in item:
+        ##         stuff_to_upload = False
+        ##         logger.info("No identifier (%s) in table", identifier_column)
                 
-            if stuff_to_upload:
-                item_to_upload = {"collection": {"id": collection_id}, "item_type": {"id":item_type_id}, "featured": args["featured"], "public": args["public"]}
-                item_to_upload["element_texts"] = element_texts
-                jsonstr = json.dumps(item_to_upload)
-                previous_id = None
-                original_id = item[identifier_column]
-                title = item[title_column] if title_column in item else "Untitled"
-                if identifier_column in item and original_id in mapping.id_to_omeka_id:
-                    previous_id = mapping.id_to_omeka_id[original_id]
+        ##     if stuff_to_upload:
+        ##         item_to_upload = {"collection": {"id": collection_id}, "item_type": {"id":item_type_id}, "featured": args["featured"], "public": args["public"]}
+        ##         item_to_upload["element_texts"] = element_texts
+        ##         jsonstr = json.dumps(item_to_upload)
+        ##         previous_id = None
+        ##         original_id = item[identifier_column]
+        ##         title = item[title_column] if title_column in item else "Untitled"
+        ##         if identifier_column in item and original_id in mapping.id_to_omeka_id:
+        ##             previous_id = mapping.id_to_omeka_id[original_id]
 
                 
-                upload(previous_id, original_id, jsonstr, title, URLs, files, iterations)
+        ##         upload(previous_id, original_id, jsonstr, title, URLs, files, iterations)
                 
 
                 
@@ -385,19 +260,3 @@ for d in data:
    
 
 
-
-mapdata = []
-
-id_sheet = tablib.import_set(mapping.id_to_omeka_id)
-
-mapdata.append({'title': 'Omeka Mapping', 'data': mapping.supplied_element_names})
-mapdata.append({'title': 'ID Mapping', 'data': id_mapping})
-mapdata.append({'title': 'Downloads', 'data': mapping.downloads})
-mapdata.append({'title': 'Multiple Uploads', 'data': mapping.multiples})
-               
-new_book = tablib.Databook()
-new_book.yaml = yaml.dump(mapdata)
-
-with open(mapfile,"wb") as f:
-    f.write(new_book.xlsx)
-logger.info("Finished")
