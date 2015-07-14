@@ -12,12 +12,26 @@ import urlparse
 import requests
 from rdflib import Graph, Literal, BNode, Namespace, RDF, URIRef
 from rdflib.namespace import DC, FOAF
-
+import logging
+import base64
 sys.path.append("../omeka-python-utils")
 from csv2repo import CSVData, Field, Item, Namespace
 
 
 
+
+# Private methods for Logging
+# -------------------------------------------------------------------
+
+def __create_logger(loggername, handler):
+    logger = logging.getLogger(loggername)
+    logger.setLevel(logging.INFO)
+    logger.addHandler(handler)
+    return logger
+
+
+def __create_formatter():
+    return logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 
 
@@ -26,6 +40,73 @@ from csv2repo import CSVData, Field, Item, Namespace
 This code was adapted from 
 
 """
+
+def create_stream_logger(loggername, stream=sys.stdout):
+    # Create the required handler
+    handler = logging.StreamHandler(stream)
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(__create_formatter())
+    
+    #create (and return) a new logger using the handler.
+    return __create_logger(loggername, handler)
+# end create_stream_logger(loggername, stream=sys.stdout)
+
+def download_and_upload_files(item):
+    """Handle any dowloads, cache as files locally, then upload all files"""
+    http = httplib2.Http()
+    download_this = True
+    files = []
+    for url_field in item.URLs:
+        url = url_field.value
+        filename = urlparse.urlsplit(url).path.split("/")[-1]
+        new_path = os.path.join(data_dir, str(item.id))
+        if not os.path.exists(new_path):
+            os.makedirs(new_path)
+        file_path = os.path.join(new_path, filename)
+        logger.info("Local filename: %s", file_path)
+
+        #Check if we have one the same size already
+        if os.path.exists(file_path):
+            response, content = http.request(url, "HEAD")
+            download_size = int(response['content-length']) if 'content-length' in response else -1
+            file_size = os.path.getsize(file_path)
+            if download_size == file_size:
+                logger.info("Already have a download of the same size: %d", file_size)
+                download_this = False
+
+        if download_this:
+            try:
+                response, content = http.request(url, "GET")
+                open(file_path,'wb').write(content)
+                logger.info(response)
+            except:
+                logger.warning("Some kind of download error happened fetching %s - pressing on" % url)
+
+        files.append(file_path)
+       
+        
+    for f in item.files:
+        files.append(os.path.join(data_dir, f.value))
+        
+    for fyle in files:
+        if os.path.exists(fyle):
+            logger.info("Uploading %s", fyle)
+            url = "%s/objects/%s/files" % (endpoint, item.id)
+            headers = {"Content-Type": "text/turtle", "slug": "files"}
+            if not requests.get(url).ok : 
+                r = requests.post(url = "%s/objects/%s" % (endpoint, item.id), headers=headers)
+                print "**********", url, r, r.text
+            (path, filename) = os.path.split(fyle)
+            url = "%s/%s" % (url, filename)
+            headers={'Content-Type': 'application/octet-stream'}
+            r = requests.put(url = url, data=open(fyle).read(), headers=headers)
+            print r, r.text
+            logger.info("Uploaded %s", fyle)
+       
+
+
+logger = create_stream_logger('csv2f4', stdout)
+
 
 
 
@@ -68,14 +149,13 @@ for collection in csv_data.collections:
     data = collection.serialize_RDF()
     headers = {'Content-type': 'text/turtle', 'Slug': collection_name, 'Accept': 'text/turtle'}
     collection_url = "%s/collections/%s" % (endpoint, collection_name)
-    # Delete first - heavy handed I know
-    print data
+  
     res = requests.delete(url = collection_url)
     res = requests.delete(url = collection_url + "/fcr:tombstone")
     res = requests.put(url = collection_url,
                         headers = headers,
                         data = data)
-    print collection_url, res.text
+    #print collection_url, res.text
     
 
 
@@ -103,9 +183,8 @@ for item in csv_data.items:
             object_path = "/rest/objects/%s" % (object_id)
             #print "Relating"
             if resource_exists('objects', object_id):
-                #print "Relation to ", object_path
                 item.graph.add((Literal("<>"),URIRef(rel.qualified_name), URIRef(object_path)))
-            #TODO _ back-relations
+            #TODO _ back-relations?
             
         # Upload it
         data = item.serialize_RDF()
@@ -121,7 +200,7 @@ for item in csv_data.items:
         res = requests.put(url = item_url,
                             headers = headers,
                             data = data)
-        print res, res.text
+        #print res, res.text
            
         if item.in_collection and resource_exists("collections", collection_id):
             headers = {"Content-Type": "text/turtle"}
@@ -129,12 +208,12 @@ for item in csv_data.items:
             collection_url = "%s/%s" % (endpoint, collection_path)
             new_collection_data = requests.get(collection_url).text + membership
             res = requests.put(url = collection_url, data = new_collection_data, headers=headers)
-            print res, res.text
+            #print res, res.text
 
 
         print item_url
-        print requests.get(item_url).text
-
+        #print requests.get(item_url).text
+        download_and_upload_files(item)
                 
                 
    
