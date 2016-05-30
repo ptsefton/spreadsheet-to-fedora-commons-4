@@ -1,6 +1,6 @@
 # CSV file to Fedora Commons using PCDM lite
 
-This is a python 3 script (which may also run under Python 2) designed to upload
+This is a python 3 script (which may also run under Python 2) designed to upload a tab separated CSV data file into Fedora 4 to populate a repository. Each row in the spreadsheet represents an Object or a Collection and Objects can reference associated files by path or URL. 
 
 
 ## Status
