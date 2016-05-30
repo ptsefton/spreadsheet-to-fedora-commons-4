@@ -2,9 +2,12 @@
 """
 Uploads a CSV file to a Fedora server
 
-
-
 """
+from __future__ import print_function
+from future import standard_library
+standard_library.install_aliases()
+from builtins import str
+from builtins import object
 import json
 import tablib
 import yaml
@@ -14,34 +17,40 @@ from sys import stdout
 import sys
 import httplib2
 import os
-import urlparse
+import urllib.parse
 import requests
 from rdflib import Graph, Literal, BNode, Namespace, RDF, URIRef
 from rdflib.namespace import DC, FOAF
 import logging
 import base64
-sys.path.append("../omeka-python-utils")
-from csv2repo import CSVData, Field, Item, Namespace
-import csv2repo
+from pcdmlite.pcdmlite import Item, Namespace
+from csv2pcdmlite.csv2pcdmlite import CSVData, Field, populate_item_from_row
 
-class F4Object(csv2repo.Item):
+
+
+
+        
+class F4Loader(object):
+    """ Object to connect to Fedora, handle all the path generation etc. Demo code only, to be fixed up with 
+        the new Fedora API Mike Lynch is developing"""
     
-    def __init__(self, loader, row = {}, id = None):
-        csv2repo.Item.__init__(self,row = row)
-        self.loader = loader
+    def get_path(self, id,  is_collection = False):
+        """ Generate a fedora path for objects / collections """
+        type_of_things = "collections" if is_collection else "objects"
+        ##TODO: URL escape ID
         
-        if row == {} and id:
-            self.id = id
-        self.loader = loader
-        self.__set_paths()
+        return("/rest/%s/%s" % (type_of_things, id))
+
+    def get_url(self, path):
+        """ Add endpoint to front of path to get URL"""
+        return("%s%s" % (self.endpoint, path))
         
-    def __set_paths(self):
-        self.URL = "%s/rest/objects/%s" % (self.loader.endpoint, self.id)
-        self.path = "/rest/objects/%s" % self.id
-        self.files_path = "%s/files" % self.path
-        
-class F4Loader:
     def __init__(self, endpoint, data_dir = "./data", quietly = False, csv_file = None):
+        """ Create the loader object:
+            data_dir: where to keep temp-downloads, consider keeping this somwhere you can re-use, as it is kind of a cache
+            quietly: Suppress most of the logging chatter
+            csv_file: Stream object containing tab-separated CSV
+        """
         self.endpoint = endpoint
         self.data_dir = data_dir
         self.csv_file = csv_file
@@ -49,12 +58,15 @@ class F4Loader:
         if quietly:
             self.logger.setLevel(30)
 
-
         if csv_file:
             self.csv_data = CSVData(csv_file)
             self.csv_data.get_items()
     
-    
+    def fedoraize_item(self, item):
+        """ Create new fedora-specific properties for a generic repository item """
+        item.path = self.get_path(item.id, item.is_collection)
+        item.URL = self.get_url(item.path)
+        item.files_path = "%s/files" % item.path # TODO: make a function!
 
 
     # Private methods for Logging
@@ -71,8 +83,6 @@ class F4Loader:
         return logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 
-
-
     def create_stream_logger(self, loggername, stream=sys.stdout):
         # Create the required handler
         handler = logging.StreamHandler(stream)
@@ -84,13 +94,17 @@ class F4Loader:
     # end create_stream_logger(loggername, stream=sys.stdout)
 
     def download_and_upload_files(self, item):
-        """Handle any dowloads, cache as files locally, then upload all files"""
+        """
+        Handle any dowloads, cache as files locally in data dir, then upload all files
+        item: An pcdm_lite item object
+
+        """
         http = httplib2.Http()
         download_this = True
         files = []
         for url_field in item.URLs:
             url = url_field.value
-            filename = urlparse.urlsplit(url).path.split("/")[-1]
+            filename = urllib.parse.urlsplit(url).path.split("/")[-1]
             new_path = os.path.join(data_dir, str(item.id))
             if not os.path.exists(new_path):
                 os.makedirs(new_path)
@@ -123,42 +137,51 @@ class F4Loader:
         for fyle in files:
             if os.path.exists(fyle):
                 self.logger.info("Uploading %s", fyle)
-                url = "%s/objects/%s/files" % (endpoint, item.id)
+                files_url = "%s/files" % (item.URL)
                 headers = {"Content-Type": "text/turtle", "slug": "files"}
-                if not requests.get(url).ok : 
-                    r = requests.post(url = "%s/objects/%s" % (endpoint, item.id), headers=headers)
-                    print "**********", url, r, r.text
+                if not requests.get(files_url).ok : 
+                    r = requests.post(url = item.URL, headers=headers)
+                    print(("**********", url, r, r.text))
                 (path, filename) = os.path.split(fyle)
-                url = "%s/%s" % (url, filename)
+                file_url = "%s/%s" % (files_url, filename)
                 headers={'Content-Type': 'application/octet-stream'}
-                r = requests.put(url = url, data=open(fyle).read(), headers=headers)
-                print r, r.text
-                self.logger.info("Uploaded %s", fyle)
+                r = requests.put(url = file_url, data=open(fyle, 'rb').read(), headers=headers)
+                
+                self.logger.info("Respoinse: \n%s \n%s \n%s", r, r.text, r.reason)
+                self.logger.info("Uploaded %s %s", file_url, fyle)
 
-    def resource_exists(self,type, id):
-        url = "%s/%s/%s" % (endpoint, type, id)
+    def resource_exists(self, url):
         res = requests.get(url)
+        self.logger.info("Checking existence of %s : %s", url, res.ok)
         return res.ok
 
     def load(self):
-        uploaded_item_ids = []
+        """
+        Push the contents of the previously read CSV file (now a list of PCDM collections and objects) into Fedora
+        """
+        
         collections = {}
         for collection in self.csv_data.collections:
+            self.fedoraize_item(collection)
             collection_name = collection.id
-            print "Processing potential collection: %s" % collection_name
-            data = collection.serialize_RDF()
+            collections[collection.id] = collection
+            print ("Processing potential collection: %s" % collection_name)
+            data = collection.serialize_RDF()[2:-1].replace("\\n", "\n")
+            print(data)
             headers = {'Content-type': 'text/turtle', 'Slug': collection_name, 'Accept': 'text/turtle'}
-            collection_url = "%s/collections/%s" % (endpoint, collection_name)
-            res = requests.delete(url = collection_url)
-            res = requests.delete(url = collection_url + "/fcr:tombstone")
-            res = requests.put(url = collection_url,
+            res = requests.delete(url = collection.URL)
+            res = requests.delete(url = collection.URL + "/fcr:tombstone")
+            res = requests.put(url = collection.URL,
                                 headers = headers,
                                 data = data)
-            #print collection_url, res.text
+            print("Trying to create collection", collection.URL, res.text)
+            print(res.status_code, res.reason)
+            
 
 
 
         for item in self.csv_data.items:
+            self.fedoraize_item(item)
             id = item.id
 
             if id != None:
@@ -166,51 +189,49 @@ class F4Loader:
                 type = item.type
                 #TODO
                 #previous_id = omeka_client.get_item_id_by_dc_identifier(id)
-                item_path = "/rest/objects/%s" % id
-                item_url = "%s/objects/%s" % (endpoint, id)
-                if item.in_collection:
-                    collection_id = item.in_collection
-
-                    #TODO check if it exists
-                    collection_path = "/collections/%s" % (collection_id)
-                    if self.resource_exists('collections', collection_id):
-                        item.graph.add((Literal("<>"), URIRef("http://pcdm.org/models#memberOf"), URIRef("/rest%s" % collection_path)))
+                item_path = item.path
+                item_url = item.URL
+                print("Processing item:", item_url)
+                collection_id = item.in_collection
+                if  collection_id and collection_id in collections:
+                    print("Adding to collection", collection_id)
+                    collection = collections[collection_id]
+                    collection_path = collection.path
+                    if self.resource_exists(collection.URL):
+                        item.graph.add((Literal("<>"), URIRef("http://pcdm.org/models#memberOf"), URIRef("%s" % collection_path)))
 
                 # Deal with relations between objects
                 for rel in item.relations:
                     object_id = rel.value
-                    object_path = "/rest/objects/%s" % (object_id)
+                    object_path = self.get_path(object_id)
+                    object_url = self.get_url(object_path)
                     #print "Relating"
-                    if self.resource_exists('objects', object_id):
+                    if self.resource_exists(object_url):
                         item.graph.add((Literal("<>"),URIRef(rel.qualified_name), URIRef(object_path)))
                     #TODO _ back-relations?
 
                 # Upload it
-                data = item.serialize_RDF()
-
-               
+                data = item.serialize_RDF()[2:-1].replace("\\n","\n")
                 headers = {'Content-type': 'text/turtle', 'Accept': 'text/turtle'}
-                if self.resource_exists('objects',id):
-                    print "already here", id
+                if self.resource_exists(item.URL):
                     data = requests.get(item_url).text + data
                 else:
-                     print "Minting", id
+                     print(("Minting", id))
                      headers['slug'] = id
                 res = requests.put(url = item_url,
                                     headers = headers,
                                     data = data)
-                #print res, res.text
-
-                if item.in_collection and self.resource_exists("collections", collection_id):
+                
+                self.logger.info("Put object: %s : %s %s ", res, res.text, res.reason)
+                if item.in_collection and self.resource_exists(collection.URL):
                     headers = {"Content-Type": "text/turtle"}
                     membership = "\n<> <http://pcdm.org/models#hasMember> <%s> \n.\n" % (item_path)
-                    collection_url = "%s/%s" % (endpoint, collection_path)
-                    new_collection_data = requests.get(collection_url).text + membership
-                    res = requests.put(url = collection_url, data = new_collection_data, headers=headers)
-                    #print res, res.text
+                    new_collection_data = requests.get(collection.URL).text + membership
+                    res = requests.put(url = collection.URL, data = new_collection_data, headers=headers)
+                    print("Posted new collection details", res, res.text ,res.reason)
 
 
-                print item_url
+                print (item_url)
                 #print requests.get(item_url).text
                 self.download_and_upload_files(item)
 
@@ -219,9 +240,8 @@ class F4Loader:
 if __name__ == "__main__":
     # Define and parse command-line arguments
     parser = argparse.ArgumentParser()
-    parser.add_argument('inputfile', type=argparse.FileType('rb'),  default=stdin, help='Name of input Excel file')
-
-    parser.add_argument('-u', '--api_url',default=None, help='Fedora URL')
+    parser.add_argument('inputfile', type=argparse.FileType('r'),  default=stdin, help='Name of input CSV file')
+    parser.add_argument('-u', '--api_url',default="http://localhost:8080", help='Fedora URL')
     parser.add_argument('-d', '--download_cache', default="./data", help='Path to a directory in which to chache dowloads (defaults to ./data)')
     parser.add_argument('-q', '--quietly', action='store_true', help='Only log errors and warnings not the constant stream of info')
     args = vars(parser.parse_args())

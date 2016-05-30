@@ -1,3 +1,4 @@
+from __future__ import print_function
 from omekaclient import OmekaClient
 from omekautils import get_omeka_config
 import argparse
@@ -18,12 +19,12 @@ parser.add_argument('-p', '--public', action='store_true', help='Make items publ
 args = vars(parser.parse_args())
 extensions =['.jpg','.jpeg','.png']
 config = get_omeka_config()
-endpoint = args['api_url'] if args['api_url'] <> None else config['api_url']
-apikey   = args['key'] if args['api_url'] <> None else config['key']
+endpoint = args['api_url'] if args['api_url'] != None else config['api_url']
+apikey   = args['key'] if args['api_url'] != None else config['key']
 omeka_client = OmekaClient(endpoint.encode("utf-8"), apikey)
 file_stash = re.sub(":|/","_",endpoint) + ".json"
 
-print file_stash;
+print(file_stash);
 
 if os.path.exists(file_stash):
     id_map = json.load(open(file_stash))
@@ -53,7 +54,7 @@ for root, dirs, files in os.walk(dir):
             for field in exif_fields:
                 if field in pic_data:
                     element_id = omeka_client.getElementId(exif_id, field, create=True)
-                    print field, element_id
+                    print(field, element_id)
                     
                     element_text = {"html": False, "text": pic_data[field]} 
                     element_text["element"] = {"id": element_id}
@@ -66,23 +67,23 @@ for root, dirs, files in os.walk(dir):
             jsonstr = json.dumps(item_to_upload)
             previous_id =   id_map[file_path] if file_path in id_map else None
                 
-            if previous_id <> None:
-                print "Re-uploading ", previous_id
+            if previous_id != None:
+                print("Re-uploading ", previous_id)
                 response, content = omeka_client.put("items" , previous_id, jsonstr)
                 if response['status'] == '404':
                     previous_id = None
                     
             if previous_id == None:
                 response, content = omeka_client.post("items", jsonstr)
-            print content
+            print(content)
             new_item = json.loads(content)
             new_item_id = new_item['id']
-            print "Item ID", new_item_id
+            print("Item ID", new_item_id)
             id_map[file_path] = new_item_id
             #Save ID map every time - make this an option
             with open(file_stash, 'w') as outfile:
                 json.dump(id_map, outfile)
-            print omeka_client.post_file_from_filename(file_path, new_item_id )
+            print(omeka_client.post_file_from_filename(file_path, new_item_id ))
 
             
 with open(file_stash, 'w') as outfile:
