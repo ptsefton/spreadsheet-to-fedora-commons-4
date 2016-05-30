@@ -14,8 +14,7 @@ We very strong recommended that you use a virtual environment for working on thi
 *  Install Fedora commons 4.
 
 *  Install standard dependencies using pip:
-
-  ```TODO```
+   TODO
 
 *  Install pcdmlite as per the [instruction at its github site](https://github.com/ptsefton/pcdcmlite)
 
