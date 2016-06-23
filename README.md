@@ -23,6 +23,7 @@ We very strong recommended that you use a virtual environment for working on thi
 
 From the root directory of this repo try this command (note the Fedora endpoint (-u) might be different for you):
 
-  ```python3 csv2f4.py -u http://localhost:8080 sample-data/first-fleet-maps.csv ```
+  ```python3 csv2f4.py -u http://localhost:8080  sample-data/first-fleet-maps.csv ```
+
 
 If you have any questions raise an issue here.
